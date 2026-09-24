@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Almaty Seismic Flats</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root { --good: #1a9850; --mid: #f0a202; --bad: #d73027; --unk: #8a8a8a; --line: #e3e3e3; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font: 13px/1.4 -apple-system, system-ui, sans-serif; background: #fff; color: #222; }
+  #app { display: flex; height: 100%; }
+  #side { width: 360px; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+  #map { flex: 1; }
+  .filters { padding: 10px 12px; border-bottom: 1px solid var(--line); overflow-y: auto; max-height: 55%; }
+  h1 { font-size: 15px; margin: 0 0 6px; }
+  fieldset { border: 0; padding: 0; margin: 8px 0; }
+  legend { font-weight: 600; margin-bottom: 3px; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .row label { display: inline-flex; gap: 4px; align-items: center; }
+  input[type=number] { width: 70px; padding: 2px 4px; }
+  input[type=range] { flex: 1; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  #count { font-weight: 600; margin-top: 6px; }
+  #list { flex: 1; overflow-y: auto; }
+  .item { display: flex; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .item:hover { background: #f6f6f6; }
+  .item img { width: 72px; height: 54px; object-fit: cover; border-radius: 4px; background: #eee; flex: none; }
+  .item b { font-size: 14px; }
+  .muted { color: #666; font-size: 12px; }
+  .pop img { width: 220px; height: 150px; object-fit: cover; border-radius: 4px; display: block; margin-bottom: 6px; }
+  .pop td { padding: 1px 6px 1px 0; vertical-align: top; }
+  .note { font-size: 11px; color: #777; margin-top: 8px; }
+  #toggleSide { display: none; }
+  @media (max-width: 700px) {
+    #app { flex-direction: column; }
+    #side { width: 100%; height: 50%; border-right: 0; border-bottom: 1px solid var(--line); }
+    #side.collapsed .filters, #side.collapsed #list { display: none; }
+    #side.collapsed { height: auto; }
+    #toggleSide { display: inline-block; float: right; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="side">
+    <div class="filters">
+      <button id="toggleSide">Фильтры ▾</button>
+      <h1>3-комн. квартиры Алматы × сейсмозоны</h1>
+      <fieldset>
+        <legend>Оценка безопасности</legend>
+        <div class="row">
+          <label><input type="checkbox" name="rating" value="good" checked><span class="dot" style="background:var(--good)"></span>Хорошая</label>
+          <label><input type="checkbox" name="rating" value="mid" checked><span class="dot" style="background:var(--mid)"></span>Средняя</label>
+          <label><input type="checkbox" name="rating" value="bad"><span class="dot" style="background:var(--bad)"></span>Слабая</label>
+          <label><input type="checkbox" name="rating" value="unk"><span class="dot" style="background:var(--unk)"></span>Нет данных</label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Сейсмозона</legend>
+        <div class="row">
+          <label><input type="checkbox" name="zone" value="0" checked>9 баллов</label>
+          <label><input type="checkbox" name="zone" value="1" checked>9–10</label>
+          <label><input type="checkbox" name="zone" value="2">10 баллов</label>
+          <label><input type="checkbox" name="zone" value="-1">вне карты</label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>До разлома не ближе: <span id="fdv"></span> м</legend>
+        <div class="row"><input id="fd" type="range" min="0" max="1500" step="50" value="300"></div>
+      </fieldset>
+      <fieldset>
+        <legend>Дом</legend>
+        <div class="row">
+          <label><input type="checkbox" name="ht" value="монолитный" checked>монолит</label>
+          <label><input type="checkbox" name="ht" value="панельный" checked>панель</label>
+          <label><input type="checkbox" name="ht" value="кирпичный" checked>кирпич</label>
+          <label><input type="checkbox" name="ht" value="" checked>не указан</label>
+        </div>
+        <div class="row" style="margin-top:4px">Год от <input id="ymin" type="number" placeholder="любой"> этажей до <input id="flsmax" type="number" placeholder="∞"></div>
+      </fieldset>
+      <fieldset>
+        <legend>Цена, млн ₸ / площадь, м²</legend>
+        <div class="row"><input id="pmin" type="number" placeholder="от"> – <input id="pmax" type="number" placeholder="до"> <input id="sqmin" type="number" placeholder="м² от"></div>
+        <div class="row" style="margin-top:4px"><label><input id="cheap" type="checkbox" checked>скрыть подозрительно дешёвые (&lt;250 тыс ₸/м²)</label></div>
+      </fieldset>
+      <div id="count"></div>
+      <div class="note">Оценка = зона (9 лучше) + расстояние до разлома (&gt;500 м лучше) + тип/год дома (монолит от 2006 лучше). Зоны сняты с карты Института сейсмологии (2021) автоматически, точность ~50 м — проверяйте конкретный дом по документам (госэкспертиза, изыскания). Данные krisha.kz на 24.09.2026.</div>
+    </div>
+    <div id="list"></div>
+  </div>
+  <div id="map"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="data.js"></script>
+<script>
+  const ZONE = { 0: '9 баллов', 1: '9 или 10 баллов', 2: '10 баллов', '-1': 'вне карты' };
+  const COLOR = { good: '#1a9850', mid: '#f0a202', bad: '#d73027', unk: '#8a8a8a' };
+  const RATING = { good: 'хорошая', mid: 'средняя', bad: 'слабая', unk: 'нет данных' };
+
+  function building(l) {
+    const y = l.y || 0;
+    if (l.ht === 'монолитный') return y >= 2006 ? 2 : 1;
+    if (l.ht === 'панельный') return y >= 1990 ? 1 : 0;
+    if (l.ht === 'кирпичный') return y >= 2000 ? 1 : 0;
+    if (l.ht) return 0;
+    return y >= 2010 ? 1 : y ? 0 : null;
+  }
+  function rate(l) {
+    if (l.z < 0 || l.fd == null) return 'unk';
+    const s = [l.z === 0 ? 2 : l.z === 1 ? 1 : 0, l.fd >= 500 ? 2 : l.fd >= 200 ? 1 : 0, building(l)];
+    if (s.includes(0)) return 'bad';
+    if (s.includes(null)) return 'unk';
+    return s.every(v => v === 2) ? 'good' : 'mid';
+  }
+  const data = window.LISTINGS.map(l => ({ ...l, r: rate(l) }));
+
+  const map = L.map('map', { crs: L.CRS.EPSG3395, center: [43.24, 76.92], zoom: 12, preferCanvas: true });
+  const yMap = L.tileLayer('https://core-renderer-tiles.maps.yandex.net/tiles?l=map&x={x}&y={y}&z={z}&scale=1&lang=ru_RU',
+    { maxZoom: 19, attribution: '© Яндекс' }).addTo(map);
+  const ySat = L.tileLayer('https://core-sat.maps.yandex.net/tiles?l=sat&x={x}&y={y}&z={z}&lang=ru_RU', { maxZoom: 19, attribution: '© Яндекс' });
+  const clean = L.imageOverlay('zones-clean.png', [[43.09709466, 76.74693611], [43.41911851, 77.05852093]],
+    { opacity: 0.45, className: 'pixelated' }).addTo(map);
+  const original = L.imageOverlay('seismic-zones.webp', [[43.09845146, 76.74881918], [43.40356116, 77.05651232]], { opacity: 0.55 });
+  const markers = L.layerGroup().addTo(map);
+  L.control.layers({ 'Яндекс схема': yMap, 'Яндекс спутник': ySat },
+    { 'Зоны (упрощённо)': clean, 'Зоны (оригинал карты)': original, 'Квартиры': markers }, { position: 'topright', collapsed: false }).addTo(map);
+
+  const fmt = n => n == null ? '—' : (n / 1e6).toFixed(1) + ' млн ₸';
+  function popup(l) {
+    return `<div class="pop">${l.ph ? `<img src="${l.ph}" loading="lazy">` : ''}
+      <b>${fmt(l.p)}</b> · ${l.sq} м²${l.fl ? ` · ${l.fl}/${l.fls} эт.` : ''}<br>${l.d || l.a || ''}
+      <table>
+        <tr><td>Оценка</td><td><b style="color:${COLOR[l.r]}">${RATING[l.r]}</b></td></tr>
+        <tr><td>Зона</td><td>${ZONE[l.z]}</td></tr>
+        <tr><td>До разлома</td><td>${l.fd == null ? '—' : l.fd === 0 ? 'в полосе разлома' : '≈ ' + l.fd + ' м'}</td></tr>
+        <tr><td>Дом</td><td>${l.ht || 'тип не указан'}${l.y ? ', ' + l.y + ' г.п.' : ''}</td></tr>
+      </table>
+      <a href="https://krisha.kz/a/show/${l.id}" target="_blank">Открыть на Крыше →</a></div>`;
+  }
+
+  function groupPopup(g, sel) {
+    const l = sel || g[0];
+    if (g.length === 1) return popup(l);
+    const others = g.filter(x => x !== l).slice(0, 30).map(x =>
+      `<a href="https://krisha.kz/a/show/${x.id}" target="_blank">${fmt(x.p)}</a> · ${x.sq} м²${x.fl ? ' · ' + x.fl + '/' + x.fls + ' эт.' : ''}`).join('<br>');
+    return popup(l) + `<div style="margin-top:6px;max-height:140px;overflow:auto"><b>Ещё ${g.length - 1} в этом доме:</b><br>${others}${g.length > 31 ? '<br>…' : ''}</div>`;
+  }
+
+  const $ = id => document.getElementById(id);
+  const checked = name => [...document.querySelectorAll(`input[name=${name}]:checked`)].map(i => i.value);
+  const num = id => $(id).value === '' ? null : +$(id).value;
+  let current = [];
+
+  function apply() {
+    $('fdv').textContent = $('fd').value;
+    const ratings = checked('rating'), zones = checked('zone').map(Number), hts = checked('ht');
+    const fd = +$('fd').value, ymin = num('ymin'), flsmax = num('flsmax'), pmin = num('pmin'), pmax = num('pmax'), sqmin = num('sqmin');
+    current = data.filter(l => ratings.includes(l.r) && zones.includes(l.z) && hts.includes(l.ht || '')
+      && (fd === 0 || (l.fd != null && l.fd >= fd))
+      && (ymin == null || (l.y && l.y >= ymin)) && (flsmax == null || (l.fls && l.fls <= flsmax))
+      && (!$('cheap').checked || l.p / l.sq >= 250000)
+      && (pmin == null || l.p >= pmin * 1e6) && (pmax == null || l.p <= pmax * 1e6) && (sqmin == null || l.sq >= sqmin));
+    // one marker per building: many listings in the same complex share coordinates
+    markers.clearLayers();
+    const groups = new Map();
+    for (const l of current) {
+      const k = l.la.toFixed(4) + ',' + l.lo.toFixed(4);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(l);
+    }
+    for (const g of groups.values()) {
+      g.sort((a, b) => a.p - b.p);
+      const m = L.circleMarker([g[0].la, g[0].lo], { radius: g.length > 1 ? Math.min(5 + 2 * Math.log2(g.length), 13) : 5,
+        weight: 1, color: '#fff', fillColor: COLOR[g[0].r], fillOpacity: 0.9 })
+        .bindPopup(() => groupPopup(g), { maxWidth: 280 }).addTo(markers);
+      if (g.length > 1) m.bindTooltip(String(g.length), { permanent: false, direction: 'top' });
+      for (const l of g) { l.m = m; l.g = g; }
+    }
+    $('count').textContent = `Найдено: ${current.length} из ${data.length} (домов: ${groups.size})`;
+    renderList();
+  }
+
+  function renderList() {
+    const order = { good: 0, mid: 1, bad: 2, unk: 3 };
+    const top = [...current].sort((a, b) => order[a.r] - order[b.r] || a.p - b.p).slice(0, 150);
+    $('list').innerHTML = top.map((l, i) => `<div class="item" data-i="${i}">
+        <img src="${l.ph || ''}" loading="lazy" alt="">
+        <div><b>${fmt(l.p)}</b> <span class="dot" style="background:${COLOR[l.r]}"></span><br>
+        ${l.sq} м²${l.fl ? ` · ${l.fl}/${l.fls} эт.` : ''} · ${l.ht || '?'}${l.y ? ' ' + l.y : ''}<br>
+        <span class="muted">${l.d || l.a || ''}</span><br>
+        <span class="muted">${ZONE[l.z]} · разлом ${l.fd == null ? '—' : '≈' + l.fd + ' м'}</span></div></div>`).join('')
+      + (current.length > 150 ? `<div class="item muted">…показаны первые 150, сузьте фильтры</div>` : '');
+    $('list').onclick = e => {
+      const el = e.target.closest('.item[data-i]');
+      if (!el) return;
+      const l = top[+el.dataset.i];
+      map.setView([l.la, l.lo], 16);
+      l.m.setPopupContent(groupPopup(l.g, l)).openPopup();
+    };
+  }
+
+  document.querySelectorAll('.filters input').forEach(i => i.addEventListener('input', apply));
+  $('toggleSide').onclick = () => $('side').classList.toggle('collapsed');
+  apply();
+</script>
+<style>.pixelated { image-rendering: pixelated; }</style>
+</body>
+</html>
