@@ -1,5 +1,8 @@
-"""Tag each listing with seismic zone + distance to nearest fault; write data.js and a clean zones overlay."""
-import json, math, numpy as np, cv2
+"""Tag listings in raw/*.json with seismic zone + distance to nearest fault; write data/*.js and a clean zones overlay."""
+import glob, json, math, os
+from collections import Counter, defaultdict
+from datetime import date
+import numpy as np, cv2
 
 B = 8                                   # block size in full-res px (counts2.npy is per block)
 counts = np.load('counts2.npy') / (B * B)
@@ -31,20 +34,58 @@ def block2ll(bx, by):
 
 m_per_block = B / 10 / s * math.cos(math.radians(43.25))            # true ground metres
 
-rows = json.load(open('listings.json'))
-out = []
-for r in rows:
-    if not r.get('lat') or not r.get('price') or r['price'] < 5_000_000:   # <5M ₸ = rent posted as sale, or typo
-        continue
-    bx, by = ll2block(r['lat'], r['lon'])
-    inside = 0 <= bx < wb and 0 <= by < hb
-    zone = int(filled[by, bx]) if inside else -1
-    fd = round(float(fdist[by, bx]) * m_per_block) if inside else None
-    out.append({'id': r['id'], 'la': round(r['lat'], 6), 'lo': round(r['lon'], 6), 'p': r['price'], 'sq': r['square'],
-                'fl': r['floor'], 'fls': r['floors'], 'a': r['address'], 'd': r['district'], 'ht': r['houseType'],
-                'y': r['year'], 'z': zone, 'fd': fd, 'ph': r['photo'], 'o': r['owner']})
-with open('data.js', 'w') as f:
-    f.write('window.LISTINGS=' + json.dumps(out, ensure_ascii=False, separators=(',', ':')) + ';\n')
+DEALS = {'prodazha': 'sale', 'arenda': 'rent'}
+PRICE_OK = {'sale': lambda p: p >= 5_000_000,               # below = rent posted as sale, or typo
+            'rent': lambda p: 60_000 <= p <= 5_000_000}     # monthly; outside = daily rent or sale price
+sets = {}
+for path in sorted(glob.glob('raw/*.json')):
+    deal, rooms = os.path.basename(path)[:-5].split('-')
+    sets[f'{DEALS[deal]}-{rooms}'] = json.load(open(path))
+
+# rent ads rarely state house type/year: borrow them from other ads in the same complex, else the same building
+def mode(vals):
+    vals = [v for v in vals if v]
+    return Counter(vals).most_common(1)[0][0] if vals else None
+by_complex, by_point = defaultdict(list), defaultdict(list)
+for rows in sets.values():
+    for r in rows:
+        if r.get('lat'):
+            if r.get('complexId'):
+                by_complex[r['complexId']].append(r)
+            by_point[(round(r['lat'], 4), round(r['lon'], 4))].append(r)
+
+os.makedirs('data', exist_ok=True)
+meta = {'updated': date.today().isoformat(), 'counts': {}}
+for key, rows in sets.items():
+    out = []
+    for r in rows:
+        if not r.get('lat') or not r.get('price') or not PRICE_OK[key.split('-')[0]](r['price']):
+            continue
+        ht, y, inferred = r.get('houseType'), r.get('year'), False
+        if not ht or not y:
+            peers = by_complex.get(r.get('complexId')) or by_point.get((round(r['lat'], 4), round(r['lon'], 4)), [])
+            ht2, y2 = mode(p.get('houseType') for p in peers), mode(p.get('year') for p in peers)
+            inferred = (not ht and bool(ht2)) or (not y and bool(y2))
+            ht, y = ht or ht2, y or y2
+        bx, by = ll2block(r['lat'], r['lon'])
+        inside = 0 <= bx < wb and 0 <= by < hb
+        o = {'id': r['id'], 'la': round(r['lat'], 6), 'lo': round(r['lon'], 6), 'p': r['price'], 'sq': r['square'],
+             'fl': r['floor'], 'fls': r['floors'], 'a': r['address'], 'd': r['district'], 'ht': ht, 'y': y,
+             'z': int(filled[by, bx]) if inside else -1,
+             'fd': round(float(fdist[by, bx]) * m_per_block) if inside else None, 'ph': r['photo'], 'rm': r['rooms']}
+        if inferred:
+            o['inf'] = 1
+        out.append(o)
+    # one listing per line, sorted by id: keeps daily git diffs small
+    with open(f'data/{key}.js', 'w') as f:
+        f.write(f'(window.DATA = window.DATA || {{}})["{key}"] = [\n')
+        f.write(',\n'.join(json.dumps(o, ensure_ascii=False, separators=(',', ':')) for o in out))
+        f.write('\n];\n')
+    meta['counts'][key] = len(out)
+    print(key, len(out), 'zones', dict(Counter(o['z'] for o in out)), 'inferred', sum('inf' in o for o in out),
+          'no type', sum(not o['ht'] for o in out))
+with open('data/meta.js', 'w') as f:
+    f.write('window.META = ' + json.dumps(meta) + ';\n')
 
 # clean overlay: 9 mint, 9/10 yellow, 10 red, faults dark hatch
 rgba = np.zeros((hb, wb, 4), np.uint8)
@@ -53,7 +94,3 @@ for k, c in colors.items():
     rgba[filled == k] = (*c, 150)
 rgba[fault == 1] = (90, 50, 0, 200)
 cv2.imwrite('zones-clean.png', cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA))
-n, w = block2ll(0, 0); S, e = block2ll(wb, hb)
-print('bounds', [[S, w], [n, e]], 'listings', len(out), 'm/block', m_per_block)
-from collections import Counter
-print(Counter(o['z'] for o in out), sum(1 for o in out if o['fd'] is not None and o['fd'] < 300))

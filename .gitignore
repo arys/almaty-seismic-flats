@@ -1,2 +1,4 @@
 scrape.log
 .DS_Store
+raw/
+nohup.out

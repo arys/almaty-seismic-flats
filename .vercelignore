@@ -1,0 +1,7 @@
+raw/
+*.py
+*.npy
+fit.json
+post.txt
+scrape.log
+.github/

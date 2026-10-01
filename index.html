@@ -32,6 +32,11 @@
   .pop img { width: 220px; height: 150px; object-fit: cover; border-radius: 4px; display: block; margin-bottom: 6px; }
   .pop td { padding: 1px 6px 1px 0; vertical-align: top; }
   .note { font-size: 11px; color: #777; margin-top: 8px; }
+  .seg { display: flex; border: 1px solid #222; border-radius: 8px; overflow: hidden; margin: 4px 0 2px; }
+  .seg label { flex: 1; text-align: center; padding: 6px 0; cursor: pointer; font-weight: 600; }
+  .seg input { display: none; }
+  .seg label:has(input:checked) { background: #222; color: #fff; }
+  #loading { color: #b36b00; }
   #tabs { display: none; }
   @media (max-width: 700px) {
     html, body { height: 100dvh; font-size: 14px; }
@@ -68,7 +73,18 @@
       <button data-t="list">Список <span id="tabCount"></span></button>
     </div>
     <div class="filters">
-      <h1>3-комн. квартиры Алматы × сейсмозоны</h1>
+      <h1>Квартиры Алматы × сейсмозоны</h1>
+      <div class="seg">
+        <label><input type="radio" name="deal" value="sale" checked>Купить</label>
+        <label><input type="radio" name="deal" value="rent">Снять</label>
+      </div>
+      <fieldset>
+        <legend>Комнат</legend>
+        <div class="row">
+          <label><input type="checkbox" name="rooms" value="2" checked>2-комн.</label>
+          <label><input type="checkbox" name="rooms" value="3" checked>3-комн.</label>
+        </div>
+      </fieldset>
       <fieldset>
         <legend>Оценка безопасности</legend>
         <div class="row">
@@ -102,12 +118,12 @@
         <div class="row" style="margin-top:4px">Год от <input id="ymin" type="number" placeholder="любой"> этажей до <input id="flsmax" type="number" placeholder="∞"></div>
       </fieldset>
       <fieldset>
-        <legend>Цена, млн ₸ / площадь, м²</legend>
+        <legend>Цена, <span id="punit">млн ₸</span> / площадь, м²</legend>
         <div class="row"><input id="pmin" type="number" placeholder="от"> – <input id="pmax" type="number" placeholder="до"> <input id="sqmin" type="number" placeholder="м² от"></div>
-        <div class="row" style="margin-top:4px"><label><input id="cheap" type="checkbox" checked>скрыть подозрительно дешёвые (&lt;250 тыс ₸/м²)</label></div>
+        <div class="row" id="cheapRow" style="margin-top:4px"><label><input id="cheap" type="checkbox" checked>скрыть подозрительно дешёвые (&lt;250 тыс ₸/м²)</label></div>
       </fieldset>
-      <div id="count"></div>
-      <div class="note">Оценка = зона (9 лучше) + расстояние до разлома (&gt;500 м лучше) + тип/год дома (монолит от 2006 лучше). Зоны сняты с карты Института сейсмологии (2021) автоматически, точность ~50 м — проверяйте конкретный дом по документам (госэкспертиза, изыскания). Данные krisha.kz на 24.09.2026.</div>
+      <div id="count"></div><div id="loading"></div>
+      <div class="note">Оценка = зона (9 лучше) + расстояние до разлома (&gt;500 м лучше) + тип/год дома (монолит от 2006 лучше). Зоны сняты с карты Института сейсмологии (2021) автоматически, точность ~50 м — проверяйте конкретный дом по документам (госэкспертиза, изыскания). Тип/год дома для аренды часто взяты из других объявлений того же ЖК (помечено «по ЖК»). Данные krisha.kz на <span id="updated"></span>, обновляются ежедневно.</div>
     </div>
     <div id="list"></div>
   </div>
@@ -115,8 +131,11 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script src="data.js"></script>
+<script src="data/meta.js"></script>
 <script>
+  const $ = id => document.getElementById(id);
+  const checked = name => [...document.querySelectorAll(`input[name=${name}]:checked`)].map(i => i.value);
+  const num = id => $(id).value === '' ? null : +$(id).value;
   const ZONE = { 0: '9 баллов', 1: '9 или 10 баллов', 2: '10 баллов', '-1': 'вне карты' };
   const COLOR = { good: '#1a9850', mid: '#f0a202', bad: '#d73027', unk: '#8a8a8a' };
   const RATING = { good: 'хорошая', mid: 'средняя', bad: 'слабая', unk: 'нет данных' };
@@ -136,7 +155,31 @@
     if (s.includes(null)) return 'unk';
     return s.every(v => v === 2) ? 'good' : 'mid';
   }
-  const data = window.LISTINGS.map(l => ({ ...l, r: rate(l) }));
+  // data/<deal>-<rooms>.js files are loaded on demand and cached in window.DATA
+  const loaded = {};
+  function load(key) {
+    if (!loaded[key]) loaded[key] = new Promise((ok, fail) => {
+      const sc = document.createElement('script');
+      sc.src = `data/${key}.js?v=${window.META.updated}`;
+      sc.onload = () => { for (const l of window.DATA[key]) l.r = rate(l); ok(window.DATA[key]); };
+      sc.onerror = fail;
+      document.head.appendChild(sc);
+    });
+    return loaded[key];
+  }
+  let data = [], deal = 'sale';
+  async function reload() {
+    deal = document.querySelector('input[name=deal]:checked').value;
+    const keys = checked('rooms').map(r => `${deal}-${r}`);
+    $('loading').textContent = 'Загрузка…';
+    const parts = await Promise.all(keys.map(load));
+    $('loading').textContent = '';
+    data = parts.flat();
+    const rent = deal === 'rent';
+    $('punit').textContent = rent ? 'тыс ₸/мес' : 'млн ₸';
+    $('cheapRow').style.display = rent ? 'none' : '';
+    apply();
+  }
 
   const map = L.map('map', { crs: L.CRS.EPSG3395, center: [43.24, 76.92], zoom: 12, preferCanvas: true });
   const yMap = L.tileLayer('https://core-renderer-tiles.maps.yandex.net/tiles?l=map&x={x}&y={y}&z={z}&scale=1&lang=ru_RU',
@@ -151,15 +194,17 @@
     { 'Зоны (упрощённо)': clean, 'Зоны (оригинал карты)': original, 'Квартиры': markers },
     { position: 'topright', collapsed: mobile.matches }).addTo(map);
 
-  const fmt = n => n == null ? '—' : (n / 1e6).toFixed(1) + ' млн ₸';
+  const fmt = n => n == null ? '—' : deal === 'rent' ? Math.round(n / 1000) + ' тыс ₸/мес' : (n / 1e6).toFixed(1) + ' млн ₸';
+  const unit = () => deal === 'rent' ? 1e3 : 1e6;
+  const house = l => (l.ht || 'тип не указан') + (l.y ? ', ' + l.y + ' г.п.' : '') + (l.inf ? ' (по ЖК)' : '');
   function popup(l) {
     return `<div class="pop">${l.ph ? `<img src="${l.ph}" loading="lazy">` : ''}
-      <b>${fmt(l.p)}</b> · ${l.sq} м²${l.fl ? ` · ${l.fl}/${l.fls} эт.` : ''}<br>${l.d || l.a || ''}
+      <b>${fmt(l.p)}</b> · ${l.rm}-комн. · ${l.sq} м²${l.fl ? ` · ${l.fl}/${l.fls} эт.` : ''}<br>${l.d || l.a || ''}
       <table>
         <tr><td>Оценка</td><td><b style="color:${COLOR[l.r]}">${RATING[l.r]}</b></td></tr>
         <tr><td>Зона</td><td>${ZONE[l.z]}</td></tr>
         <tr><td>До разлома</td><td>${l.fd == null ? '—' : l.fd === 0 ? 'в полосе разлома' : '≈ ' + l.fd + ' м'}</td></tr>
-        <tr><td>Дом</td><td>${l.ht || 'тип не указан'}${l.y ? ', ' + l.y + ' г.п.' : ''}</td></tr>
+        <tr><td>Дом</td><td>${house(l)}</td></tr>
       </table>
       <a href="https://krisha.kz/a/show/${l.id}" target="_blank">Открыть на Крыше →</a></div>`;
   }
@@ -168,13 +213,10 @@
     const l = sel || g[0];
     if (g.length === 1) return popup(l);
     const others = g.filter(x => x !== l).slice(0, 30).map(x =>
-      `<a href="https://krisha.kz/a/show/${x.id}" target="_blank">${fmt(x.p)}</a> · ${x.sq} м²${x.fl ? ' · ' + x.fl + '/' + x.fls + ' эт.' : ''}`).join('<br>');
+      `<a href="https://krisha.kz/a/show/${x.id}" target="_blank">${fmt(x.p)}</a> · ${x.rm}-к · ${x.sq} м²${x.fl ? ' · ' + x.fl + '/' + x.fls + ' эт.' : ''}`).join('<br>');
     return popup(l) + `<div style="margin-top:6px;max-height:140px;overflow:auto"><b>Ещё ${g.length - 1} в этом доме:</b><br>${others}${g.length > 31 ? '<br>…' : ''}</div>`;
   }
 
-  const $ = id => document.getElementById(id);
-  const checked = name => [...document.querySelectorAll(`input[name=${name}]:checked`)].map(i => i.value);
-  const num = id => $(id).value === '' ? null : +$(id).value;
   let current = [];
 
   function apply() {
@@ -184,8 +226,8 @@
     current = data.filter(l => ratings.includes(l.r) && zones.includes(l.z) && hts.includes(l.ht || '')
       && (fd === 0 || (l.fd != null && l.fd >= fd))
       && (ymin == null || (l.y && l.y >= ymin)) && (flsmax == null || (l.fls && l.fls <= flsmax))
-      && (!$('cheap').checked || l.p / l.sq >= 250000)
-      && (pmin == null || l.p >= pmin * 1e6) && (pmax == null || l.p <= pmax * 1e6) && (sqmin == null || l.sq >= sqmin));
+      && (deal === 'rent' || !$('cheap').checked || l.p / l.sq >= 250000)
+      && (pmin == null || l.p >= pmin * unit()) && (pmax == null || l.p <= pmax * unit()) && (sqmin == null || l.sq >= sqmin));
     // one marker per building: many listings in the same complex share coordinates
     markers.clearLayers();
     const groups = new Map();
@@ -213,7 +255,7 @@
     $('list').innerHTML = top.map((l, i) => `<div class="item" data-i="${i}">
         <img src="${l.ph || ''}" loading="lazy" alt="">
         <div><b>${fmt(l.p)}</b> <span class="dot" style="background:${COLOR[l.r]}"></span><br>
-        ${l.sq} м²${l.fl ? ` · ${l.fl}/${l.fls} эт.` : ''} · ${l.ht || '?'}${l.y ? ' ' + l.y : ''}<br>
+        ${l.rm}-комн. · ${l.sq} м²${l.fl ? ` · ${l.fl}/${l.fls} эт.` : ''} · ${l.ht || '?'}${l.y ? ' ' + l.y : ''}${l.inf ? ' (по ЖК)' : ''}<br>
         <span class="muted">${l.d || l.a || ''}</span><br>
         <span class="muted">${ZONE[l.z]} · разлом ${l.fd == null ? '—' : '≈' + l.fd + ' м'}</span></div></div>`).join('')
       + (current.length > 150 ? `<div class="item muted">…показаны первые 150, сузьте фильтры</div>` : '');
@@ -227,14 +269,16 @@
     };
   }
 
-  document.querySelectorAll('.filters input').forEach(i => i.addEventListener('input', apply));
+  document.querySelectorAll('.filters input').forEach(i =>
+    i.addEventListener('input', i.name === 'deal' || i.name === 'rooms' ? reload : apply));
+  $('updated').textContent = window.META.updated.split('-').reverse().join('.');
   function setTab(t) {
     $('side').dataset.tab = t;
     document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t));
   }
   document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => setTab(b.dataset.t));
   mobile.addEventListener('change', () => { setTab('map'); map.invalidateSize(); });
-  apply();
+  reload();
 </script>
 <style>.pixelated { image-rendering: pixelated; }</style>
 </body>
